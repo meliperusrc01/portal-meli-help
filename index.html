@@ -1981,6 +1981,48 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Ar
   <span id="toast-msg">Solicitação enviada! Abrindo formulário...</span>
 </div>
 
+<script type="module">
+// ── FIREBASE (sincronização em tempo real fora do Grid, ex.: GitHub Pages) ──
+// Quando este HTML é aberto dentro do Grid, window.GRID.state já cobre a sincronização
+// entre computadores. Fora do Grid (GitHub Pages ou aberto localmente), este bloco liga
+// um Firebase Realtime Database público (sem necessidade de login) para o mesmo fim,
+// com atualizações instantâneas via listener (onValue), não apenas ao recarregar a página.
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, get, update, onValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBUnPojpNRolpvrqQIlfEjRTx0MisaIxA0",
+  authDomain: "portal-meli-help.firebaseapp.com",
+  databaseURL: "https://portal-meli-help-default-rtdb.firebaseio.com",
+  projectId: "portal-meli-help",
+  storageBucket: "portal-meli-help.firebasestorage.app",
+  messagingSenderId: "505207119607",
+  appId: "1:505207119607:web:9d9930d83f4b538401fdf2"
+};
+
+try {
+  const mhApp = initializeApp(firebaseConfig);
+  const mhDb = getDatabase(mhApp);
+  const mhDataRef = ref(mhDb, 'melihelp_data');
+
+  window.MH_FIREBASE = {
+    async get() {
+      const snap = await get(mhDataRef);
+      return snap.exists() ? snap.val() : null;
+    },
+    async patch(obj) {
+      return update(mhDataRef, obj);
+    },
+    onChange(cb) {
+      onValue(mhDataRef, (snap) => cb(snap.exists() ? snap.val() : null));
+    }
+  };
+} catch (e) {
+  console.warn('[MeliHelp] Firebase não pôde ser inicializado; usando apenas dados locais deste computador.', e);
+}
+window.dispatchEvent(new Event('mh-firebase-ready'));
+</script>
+
 <script>
 const breadcrumbs = {
   inicio:'Início · RC01 · Atualizado agora',
@@ -2650,43 +2692,115 @@ function setLS(k, v) {
 // do Grid): sincronizamos ao carregar a página e quando a aba volta a ficar visível.
 const MH_SYNC_KEYS = ['mh_atendentes', 'mh_chamados', 'mh_perdidos', 'mh_inventario'];
 let _mhGridReady = false;
+let _mhFirebaseSubscribed = false;
+
+function mhHasGrid() {
+  return !!(window.GRID && window.GRID.state && typeof window.GRID.state.get === 'function');
+}
+
+// Fora do Grid (ex.: GitHub Pages), aguarda o módulo Firebase (carregado de forma assíncrona
+// no topo do documento) ficar disponível, com um tempo limite de segurança.
+function mhWaitFirebase() {
+  if (window.MH_FIREBASE) return Promise.resolve(window.MH_FIREBASE);
+  return new Promise((resolve) => {
+    const done = () => resolve(window.MH_FIREBASE || null);
+    window.addEventListener('mh-firebase-ready', done, { once: true });
+    setTimeout(done, 4000);
+  });
+}
 
 async function mhHydrateFromGrid() {
-  if (!(window.GRID && window.GRID.state && typeof window.GRID.state.get === 'function')) return;
+  if (mhHasGrid()) {
+    try {
+      const res = await window.GRID.state.get();
+      const remote = res && res.state ? res.state : null;
+      const seed = {};
+      MH_SYNC_KEYS.forEach(k => {
+        if (remote && remote[k] !== undefined) {
+          // Grid já tem dados desta chave (de qualquer computador) — eles prevalecem
+          try { localStorage.setItem(k, JSON.stringify(remote[k])); } catch(e) {}
+        } else {
+          // Grid ainda não tem esta chave: se este computador já tem dados locais, migra-os
+          // para o Grid uma única vez (ex.: primeira vez que este recurso é usado no doc).
+          const local = localStorage.getItem(k);
+          if (local) { try { seed[k] = JSON.parse(local); } catch(e) {} }
+        }
+      });
+      if (Object.keys(seed).length) mhPushSeedToGrid(seed);
+      _mhGridReady = true;
+    } catch (e) {
+      console.warn('[MeliHelp] Não foi possível sincronizar com o Grid, usando dados locais deste computador.', e);
+    }
+    return;
+  }
+
+  // Fallback Firebase (fora do Grid) — dados públicos, sem login, em tempo real.
+  const fb = await mhWaitFirebase();
+  if (!fb) return;
   try {
-    const res = await window.GRID.state.get();
-    const remote = res && res.state ? res.state : null;
+    const remote = await fb.get();
     const seed = {};
     MH_SYNC_KEYS.forEach(k => {
       if (remote && remote[k] !== undefined) {
-        // Grid já tem dados desta chave (de qualquer computador) — eles prevalecem
         try { localStorage.setItem(k, JSON.stringify(remote[k])); } catch(e) {}
       } else {
-        // Grid ainda não tem esta chave: se este computador já tem dados locais, migra-os
-        // para o Grid uma única vez (ex.: primeira vez que este recurso é usado no doc).
         const local = localStorage.getItem(k);
         if (local) { try { seed[k] = JSON.parse(local); } catch(e) {} }
       }
     });
     if (Object.keys(seed).length) mhPushSeedToGrid(seed);
     _mhGridReady = true;
+
+    // Assina atualizações em tempo real: qualquer alteração feita em outro dispositivo
+    // chega aqui automaticamente, sem precisar recarregar a página.
+    if (!_mhFirebaseSubscribed) {
+      _mhFirebaseSubscribed = true;
+      fb.onChange((remoteNow) => {
+        if (!remoteNow) return;
+        let changed = false;
+        MH_SYNC_KEYS.forEach(k => {
+          if (remoteNow[k] !== undefined) {
+            const incoming = JSON.stringify(remoteNow[k]);
+            if (localStorage.getItem(k) !== incoming) {
+              localStorage.setItem(k, incoming);
+              changed = true;
+            }
+          }
+        });
+        if (changed) mhRefreshVisibleData();
+      });
+    }
   } catch (e) {
-    console.warn('[MeliHelp] Não foi possível sincronizar com o Grid, usando dados locais deste computador.', e);
+    console.warn('[MeliHelp] Não foi possível sincronizar com o Firebase, usando dados locais deste computador.', e);
   }
 }
 
 function mhPushToGrid(key, value) {
-  if (!(window.GRID && window.GRID.state && typeof window.GRID.state.patch === 'function')) return;
-  window.GRID.state.patch({ [key]: value }).catch(e => {
-    console.warn('[MeliHelp] Falha ao sincronizar "' + key + '" com o Grid (outros computadores podem não receber esta alteração).', e);
-  });
+  if (mhHasGrid()) {
+    window.GRID.state.patch({ [key]: value }).catch(e => {
+      console.warn('[MeliHelp] Falha ao sincronizar "' + key + '" com o Grid (outros computadores podem não receber esta alteração).', e);
+    });
+    return;
+  }
+  if (window.MH_FIREBASE) {
+    window.MH_FIREBASE.patch({ [key]: value }).catch(e => {
+      console.warn('[MeliHelp] Falha ao sincronizar "' + key + '" com o Firebase (outros dispositivos podem não receber esta alteração).', e);
+    });
+  }
 }
 
 function mhPushSeedToGrid(seedObj) {
-  if (!(window.GRID && window.GRID.state && typeof window.GRID.state.patch === 'function')) return;
-  window.GRID.state.patch(seedObj).catch(e => {
-    console.warn('[MeliHelp] Falha ao migrar dados locais para o Grid.', e);
-  });
+  if (mhHasGrid()) {
+    window.GRID.state.patch(seedObj).catch(e => {
+      console.warn('[MeliHelp] Falha ao migrar dados locais para o Grid.', e);
+    });
+    return;
+  }
+  if (window.MH_FIREBASE) {
+    window.MH_FIREBASE.patch(seedObj).catch(e => {
+      console.warn('[MeliHelp] Falha ao migrar dados locais para o Firebase.', e);
+    });
+  }
 }
 
 function mhRefreshVisibleData() {

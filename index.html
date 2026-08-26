@@ -4522,20 +4522,42 @@ function abrirProcedimento(key, paraSolicitar) {
   const cta = document.getElementById('proc-info-cta');
   const cienteWrap = document.getElementById('proc-info-ciente-wrap');
   const cienteChk = document.getElementById('proc-info-ciente-chk');
+  const nomeWrap = document.getElementById('proc-info-nome-wrap');
+  const nomeInput = document.getElementById('proc-info-nome-input');
 
   if (paraSolicitar) {
+    if (nomeWrap) nomeWrap.style.display = '';
+    if (nomeInput) {
+      // Pré-preenche com o último nome usado, para não precisar digitar de novo a cada solicitação
+      nomeInput.value = localStorage.getItem('mh_user') || '';
+      nomeInput.style.borderColor = '';
+    }
     if (cienteWrap) cienteWrap.style.display = '';
+    const checaLiberacao = () => {
+      const nomeOk = !nomeInput || nomeInput.value.trim().length > 0;
+      const cienteOk = !cienteChk || cienteChk.checked;
+      cta.disabled = !(nomeOk && cienteOk);
+    };
     if (cienteChk) {
       cienteChk.checked = false;
-      cta.disabled = true;
-      cienteChk.onchange = () => { cta.disabled = !cienteChk.checked; };
+      cienteChk.onchange = checaLiberacao;
     }
+    if (nomeInput) nomeInput.oninput = checaLiberacao;
+    checaLiberacao();
     cta.textContent = 'Estou ciente, criar chamado →';
     cta.onclick = () => {
+      const nome = nomeInput ? nomeInput.value.trim() : '';
+      if (!nome) {
+        if (nomeInput) nomeInput.style.borderColor = 'var(--red)';
+        showToast('Digite o nome completo do solicitante', '⚠️');
+        return;
+      }
+      try { localStorage.setItem('mh_user', nome); } catch(e) {}
       closeModal('procedimento-info');
-      criarChamadoEAbrirForm(key);
+      criarChamadoEAbrirForm(key, nome);
     };
   } else {
+    if (nomeWrap) nomeWrap.style.display = 'none';
     if (cienteWrap) cienteWrap.style.display = 'none';
     cta.disabled = false;
     cta.textContent = 'Fazer solicitação →';
@@ -4549,12 +4571,22 @@ function abrirProcedimento(key, paraSolicitar) {
 
 // Cria o chamado (com protocolo) e abre o Google Forms oficial na hora — chamado apenas
 // depois que a pessoa confirma "Estou ciente" no procedimento (abrirProcedimento).
-function criarChamadoEAbrirForm(tipo) {
+function criarChamadoEAbrirForm(tipo, nomeSolicitante) {
   const s = SERVICOS_ATALHO[tipo];
   if (!s) return;
   registrarUsoAtalho(tipo);
-  const protocolo = salvarChamadoLS(s.titulo, { tipo, solicitante: localStorage.getItem('mh_user') || 'Solicitante' });
-  window.open(s.url, '_blank');
+  const solicitante = (nomeSolicitante && nomeSolicitante.trim()) || localStorage.getItem('mh_user') || 'Solicitante';
+  const protocolo = salvarChamadoLS(s.titulo, { tipo, solicitante });
+
+  // Já que temos o nome do solicitante, aproveita para pré-preencher esse campo no Google
+  // Forms oficial (quando existir mapeamento para este tipo), poupando a pessoa de digitar
+  // o nome de novo lá dentro.
+  const gform = GOOGLE_FORMS[tipo];
+  if (gform && gform.mode === 'prefill') {
+    abrirGoogleFormPreenchido(gform.formId, gform.map({ solicitante }));
+  } else {
+    window.open(s.url, '_blank');
+  }
   showToast('Chamado ' + protocolo + ' criado! Preencha o formulário que abriu para concluir o envio.', '✓');
   const chamados = getLS('mh_chamados', []);
   const badge = document.getElementById('badge-chamados');
@@ -5000,6 +5032,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     <div class="modal-body">
       <div class="prazo-banner"><span class="prazo-label">Prazo de referência</span><span class="prazo-val" id="proc-info-prazo">—</span></div>
       <div id="proc-info-body"></div>
+    </div>
+    <div id="proc-info-nome-wrap" style="display:none;padding:14px 24px 0;border-top:1px solid var(--gray-100)">
+      <label class="form-label" for="proc-info-nome-input">Nome completo do solicitante *</label>
+      <input class="form-input" id="proc-info-nome-input" type="text" placeholder="Digite seu nome completo" style="width:100%;margin-top:6px;box-sizing:border-box">
+      <div style="font-size:11px;color:var(--gray-400);margin-top:4px">Esse nome vai aparecer no chamado, para identificar quem fez a solicitação.</div>
     </div>
     <div id="proc-info-ciente-wrap" style="display:none;padding:14px 24px;border-top:1px solid var(--gray-100)">
       <label style="display:flex;align-items:flex-start;gap:10px;font-size:13px;color:var(--gray-700);cursor:pointer">

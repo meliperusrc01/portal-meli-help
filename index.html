@@ -2675,6 +2675,11 @@ document.addEventListener('DOMContentLoaded', () => {
 // ── CONSTANTES ──
 const SENHAS = { atendente: 'melihelp2024', master: 'master2024' };
 
+async function sha256Hex(texto) {
+const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(texto)));
+return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ── STORAGE HELPERS ──
 function getLS(k, def) {
   try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch(e) { return def; }
@@ -2890,10 +2895,10 @@ function initInventario() {
 }
 
 // ── INICIALIZAR ATENDENTES PADRÃO ──
-function initAtendentes() {
+async function initAtendentes() {
   if (!localStorage.getItem('mh_atendentes')) {
     setLS('mh_atendentes', [
-      { id:'master', nome:'Master Admin', usuario:'master', senha:'master2024', perfil:'master', ativo:true }
+      { id:'master', nome:'Master Admin', usuario:'master', senha: await sha256Hex('master2024'), perfil:'master', ativo:true }
     ]);
   }
 }
@@ -2920,7 +2925,7 @@ function handlePainelAccess(target) {
   }
 }
 
-function doLogin() {
+async function doLogin() {
   const user = document.getElementById('login-user').value.trim();
   const pass = document.getElementById('login-pass').value;
   if (!user) { document.getElementById('login-err').textContent = 'Digite seu nome de usuário.'; document.getElementById('login-err').classList.add('show'); return; }
@@ -2940,10 +2945,16 @@ function doLogin() {
   }
 
   if (cadastro && cadastro.ativo) {
-    if (cadastro.senha === pass) {
-      perfil = cadastro.perfil;
-      userName = cadastro.nome;
-    } else {
+const _senhaHash = await sha256Hex(pass);
+if (cadastro.senha === _senhaHash) {
+perfil = cadastro.perfil;
+userName = cadastro.nome;
+} else if (cadastro.senha === pass) {
+perfil = cadastro.perfil;
+userName = cadastro.nome;
+cadastro.senha = _senhaHash;
+setLS('mh_atendentes', atendentes);
+} else {
       document.getElementById('login-err').textContent = 'Senha incorreta para o usuário ' + cadastro.nome + '.';
       document.getElementById('login-err').classList.add('show');
       return;
@@ -3134,7 +3145,7 @@ function abrirAlterarSenha() {
   document.body.style.overflow = 'hidden';
 }
 
-function salvarNovaSenha() {
+async function salvarNovaSenha() {
   const errEl = document.getElementById('senha-err');
   const showErr = (msg) => { errEl.textContent = msg; errEl.style.display = 'block'; };
   const nova = document.getElementById('senha-nova').value;
@@ -3147,11 +3158,11 @@ function salvarNovaSenha() {
   const user = getCurrentUser();
 
   if (perfil === 'master') {
-    setLS('mh_master_senha_custom', nova);
+    setLS('mh_master_senha_custom', await sha256Hex(nova));
   } else if (perfil === 'atendente') {
     const atendentes = getLS('mh_atendentes', []);
     const at = atendentes.find(a => a.nome === user);
-    if (at) { at.senha = nova; setLS('mh_atendentes', atendentes); }
+    if (at) { at.senha = await sha256Hex(nova); setLS('mh_atendentes', atendentes); }
   } else {
     showErr('Faça login no Portal Meli Help para alterar a senha.');
     return;
@@ -4350,7 +4361,7 @@ function abrirEditarAtendente(id) {
   document.body.style.overflow = 'hidden';
 }
 
-function salvarNovoAtendente() {
+async function salvarNovoAtendente() {
   const nome = document.getElementById('na-nome').value.trim();
   const user = document.getElementById('na-user').value.trim();
   const pass = document.getElementById('na-pass').value;
@@ -4369,13 +4380,13 @@ function salvarNovoAtendente() {
     a.nome = nome;
     a.usuario = user;
     a.perfil = perfil;
-    if (pass) a.senha = pass; // só troca a senha se algo foi digitado
+    if (pass) a.senha = await sha256Hex(pass); // só troca a senha se algo foi digitado
     setLS('mh_atendentes', atendentes);
     closeModal('novo-atendente');
     renderGestaoUsuarios();
     showToast('Atendente ' + nome + ' atualizado!', '✓');
   } else {
-    atendentes.push({ id: 'u' + Date.now(), nome, usuario: user, senha: pass, perfil, ativo: true });
+    atendentes.push({ id: 'u' + Date.now(), nome, usuario: user, senha: await sha256Hex(pass), perfil, ativo: true });
     setLS('mh_atendentes', atendentes);
     closeModal('novo-atendente');
     renderGestaoUsuarios();
@@ -4599,7 +4610,7 @@ function criarChamadoEAbrirForm(tipo, nomeSolicitante) {
 document.addEventListener('DOMContentLoaded', async () => {
   await mhHydrateFromGrid();
   initInventario();
-  initAtendentes();
+  await initAtendentes();
   updateAuthUI();
   // Badge chamados
   const chamados = getLS('mh_chamados', []);
